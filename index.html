@@ -1,0 +1,370 @@
+<!doctype html>
+
+<html lang="id">  
+<head>  
+<meta charset="utf-8" />  
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />  
+<title>Dodder - Tsunami Mode (Final)</title>  
+<style>  
+  :root{--bg:#0b0b0f;--fg:#dbe2ff;--red:#ff4d4d;--gray:#9aa0a6}  
+  html,body{height:100%;margin:0;background:var(--bg);font-family: 'Courier New', Courier, monospace;}  
+  #wrap{position:relative;height:100vh;display:flex;align-items:center;justify-content:center}  
+  canvas{background:#0b0b0f;image-rendering:pixelated;display:block}  
+  /* Pixel-looking button (naik sedikit supaya nggak nutupin) */  
+  .btn{position:absolute;left:50%;transform:translateX(-50%);bottom:60px;padding:10px 18px;border:3px solid var(--fg);background:transparent;color:var(--fg);font-weight:700;letter-spacing:1px;cursor:pointer;font-family:monospace;font-size:14px;border-radius:6px}  
+  .overlay{position:absolute;left:0;right:0;top:0;bottom:0;display:flex;align-items:center;justify-content:center;pointer-events:none}  
+  .panel{background:rgba(0,0,0,0.65);padding:12px 18px;border:3px solid #20222a;color:var(--fg);font-family:monospace;pointer-events:auto;text-align:center;border-radius:8px}  
+  .panel h1{margin:0 0 8px 0;font-size:18px;letter-spacing:1px}  
+  #countdown{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);font-family:monospace;color:var(--fg);font-size:40px;pointer-events:none}  
+  /* Hide default touch highlight */  
+  html,body,#wrap,canvas{ -webkit-tap-highlight-color: transparent; }  
+</style>  
+</head>  
+<body>  
+<div id="wrap">  
+  <canvas id="game"></canvas>  
+  <button id="startBtn" class="btn">START</button>  
+  <div class="overlay" id="gameOver" style="display:none">  
+    <div class="panel" id="panel">  
+      <h1>GAME OVER</h1>  
+      <div id="finalScore">Score: 0</div>  
+      <div style="height:8px"></div>  
+      <button id="restart" class="btn" style="position:static;transform:none;bottom:auto;">RESTART</button>  
+    </div>  
+  </div>  
+  <div id="countdown"></div>  
+</div>  <script>  
+// ---------- Dodder dengan TSUNAMI MODE (Final) ----------  
+  
+// DOM  
+const canvas = document.getElementById('game');  
+const ctx = canvas.getContext('2d');  
+const startBtn = document.getElementById('startBtn');  
+const gameOverPanel = document.getElementById('gameOver');  
+const finalScoreEl = document.getElementById('finalScore');  
+const restartBtn = document.getElementById('restart');  
+const countdownEl = document.getElementById('countdown');  
+  
+// virtual pixel scale  
+let SCALE = 2;  
+function fit(){  
+  const W = Math.min(window.innerWidth, 900);  
+  const H = Math.min(window.innerHeight, 900);  
+  const VIRTUAL_W = 160;  
+  const VIRTUAL_H = Math.max(120, Math.floor(VIRTUAL_W * (H/W)));  
+  SCALE = Math.max(1, Math.floor(Math.min(window.innerWidth / VIRTUAL_W, window.innerHeight / VIRTUAL_H)));  
+  canvas.width = VIRTUAL_W * SCALE;  
+  canvas.height = VIRTUAL_H * SCALE;  
+  canvas.style.width = (VIRTUAL_W * SCALE) + 'px';  
+  canvas.style.height = (VIRTUAL_H * SCALE) + 'px';  
+  ctx.imageSmoothingEnabled = false;  
+  canvas.vw = VIRTUAL_W;  
+  canvas.vh = VIRTUAL_H;  
+}  
+fit();  
+window.addEventListener('resize', ()=>{ fit(); reset(); });  
+  
+// objects & state  
+const player = { x: 80, y: null, size: 12, movable: true };  
+const shooter = { x: 80, y: 14, size: 16 };  
+let bullets = []; // {x, y, vx, vy, size, source}  
+let running = false;  
+let score = 0;  
+let lastTime = null;  
+let spawnTimer = 0;  
+let spawnInterval = 0.8;  
+  
+// TSUNAMI state  
+let tsunamiActive = false;  
+let tsunamiTimer = 0;  
+let tsunamiDuration = 0;  
+let tsunamiFireTimer = 0;  
+let tsunamiCooldown = 0; // prevents immediate retrigger  
+let lastTsunamiTriggeredScore = 0;  
+  
+// helper: clamp  
+function clampPlayer(){  
+  if(player.x < player.size) player.x = player.size;  
+  if(player.x > canvas.vw - player.size) player.x = canvas.vw - player.size;  
+  if(player.y < player.size) player.y = player.size;  
+  if(player.y > canvas.vh - player.size) player.y = canvas.vh - player.size;  
+}  
+  
+// reset game  
+function reset(){  
+  const vw = canvas.vw; const vh = canvas.vh;  
+  player.x = Math.floor(vw/2);  
+  player.size = 12;  
+  player.y = vh - 14;  
+  player.movable = true;  
+  shooter.x = Math.floor(vw/2);  
+  shooter.y = 14;  
+  shooter.size = 16;  
+  bullets = [];  
+  running = false;  
+  countdownEl.textContent = '';  
+  score = 0;  
+  tsunamiActive = false;  
+  tsunamiTimer = 0;  
+  tsunamiDuration = 0;  
+  tsunamiFireTimer = 0;  
+  tsunamiCooldown = 0;  
+  lastTsunamiTriggeredScore = 0;  
+  updateFinalScore();  
+  gameOverPanel.style.display = 'none';  
+}  
+reset();  
+  
+// ---- Start sequence (3-2-1 GO) ----  
+function startSequence(){  
+  if(startBtn.disabled) return;  
+  startBtn.disabled = true;  
+  const seq = [3,2,1,'GO!'];  
+  let i = 0;  
+  countdownEl.style.fontSize = (24 * SCALE) + 'px';  
+  countdownEl.style.display = 'block';  
+  function step(){  
+    if(i >= seq.length){ countdownEl.textContent = ''; startGame(); return; }  
+    countdownEl.textContent = seq[i]; i++; setTimeout(step, 700);  
+  }  
+  step();  
+}  
+function startGame(){ running = true; spawnTimer = 0; lastTime = null; startBtn.disabled = true; player.movable = true; }  
+  
+// ---- End game ----  
+function endGame(){  
+  running = false;  
+  player.movable = false; // freeze movement  
+  tsunamiActive = false; // stop tsunami spawning  
+  gameOverPanel.style.display = 'flex';  
+  finalScoreEl.textContent = 'Score: ' + score;  
+  startBtn.disabled = false;  
+}  
+  
+// ---- Spawn functions ----  
+// spawn top bullets (used normally) - count default 2  
+function spawnTopBullets(count=2){  
+  for(let i=0;i<count;i++){  
+    const spawnX = Math.random() * canvas.vw;  
+    const speed = 90 + Math.min(220, Math.floor(score * 1.8)); // top bullets speed scales with score  
+    const vx = (Math.random() - 0.5) * 10;  
+    bullets.push({  
+      x: spawnX,  
+      y: shooter.y + 4,  
+      vx: vx,  
+      vy: speed,  
+      size: 10,  
+      source: 'top'  
+    });  
+  }  
+}  
+  
+// spawn side volley: pattern per spec  
+function spawnSideVolley(){  
+  // compute side speed so bullets move horizontally nicely  
+  // we want a reasonable horizontal speed (use vw / travelTime reference)  
+  const travelTime = 6; // reference for speed  
+  const speedSide = canvas.vw / travelTime;  
+  
+  // RIGHT side: top 2, bottom 1  
+  bullets.push({ x: canvas.vw + 4, y: 8, vx: -speedSide + (Math.random()-0.5)*1.5, vy: 0, size: 12, source: 'side' });  
+  bullets.push({ x: canvas.vw + 4, y: 18, vx: -speedSide + (Math.random()-0.5)*1.5, vy: 0, size: 12, source: 'side' });  
+  bullets.push({ x: canvas.vw + 4, y: canvas.vh - 12, vx: -speedSide + (Math.random()-0.5)*1.5, vy: 0, size: 12, source: 'side' });  
+  
+  // LEFT side: top 2, bottom 1  
+  bullets.push({ x: -4, y: 8, vx: speedSide + (Math.random()-0.5)*1.5, vy: 0, size: 12, source: 'side' });  
+  bullets.push({ x: -4, y: 18, vx: speedSide + (Math.random()-0.5)*1.5, vy: 0, size: 12, source: 'side' });  
+  bullets.push({ x: -4, y: canvas.vh - 12, vx: speedSide + (Math.random()-0.5)*1.5, vy: 0, size: 12, source: 'side' });  
+}  
+  
+// Start tsunami: enable continuous side-fire for 6-7s  
+function startTsunami(){  
+  if(tsunamiActive) return;  
+  tsunamiActive = true;  
+  tsunamiTimer = 0;  
+  tsunamiDuration = 6 + Math.random(); // 6-7 seconds  
+  tsunamiFireTimer = 0;  
+  tsunamiCooldown = 0; // we'll set cooldown after finish  
+  // immediate volley when starting  
+  spawnSideVolley();  
+  lastTsunamiTriggeredScore = score;  
+}  
+  
+// ---- Update loop ----  
+function update(dt){  
+  if(!running) return;  
+  
+  // Move bullets  
+  for(let i=bullets.length-1;i>=0;i--){  
+    const b = bullets[i];  
+    b.x += b.vx * dt;  
+    b.y += b.vy * dt;  
+  
+    // collision (AABB approx)  
+    if(b.x >= player.x - player.size && b.x <= player.x + player.size && b.y >= player.y - player.size && b.y <= player.y + player.size){  
+      endGame();  
+      return;  
+    }  
+  
+    // if off-screen: bottom or fully left/right -> remove. top bullets that pass bottom => score+1  
+    const offBottom = (b.y > canvas.vh + 6);  
+    const offLeft = (b.x < -10);  
+    const offRight = (b.x > canvas.vw + 10);  
+    if(offBottom || offLeft || offRight){  
+      if(b.source === 'top' && offBottom){  
+        score += 1;  
+        updateFinalScore();  
+        // only trigger tsunami when reaching new multiple of 100 and not currently active  
+        if(score > 0 && score % 100 === 0 && !tsunamiActive && lastTsunamiTriggeredScore !== score){  
+          startTsunami();  
+        }  
+      }  
+      bullets.splice(i,1);  
+    }  
+  }  
+  
+  // Normal spawning of top bullets  
+  spawnTimer += dt;  
+  const interval = Math.max(0.35, spawnInterval - score * 0.02);  
+  if(spawnTimer >= interval){  
+    spawnTimer = 0;  
+    spawnTopBullets(2); // 2 top bullets each spawn  
+  }  
+  
+  // TSUNAMI behavior: while active, spawn side volleys every 2s and stop after duration  
+  if(tsunamiActive){  
+    tsunamiTimer += dt;  
+    tsunamiFireTimer += dt;  
+    const fireCadence = 2.0; // spawn side volley every 2 seconds  
+    if(tsunamiFireTimer >= fireCadence){  
+      tsunamiFireTimer = 0;  
+      spawnSideVolley();  
+    }  
+    if(tsunamiTimer >= tsunamiDuration){  
+      // finish tsunami  
+      tsunamiActive = false;  
+      tsunamiTimer = 0;  
+      tsunamiDuration = 0;  
+      tsunamiFireTimer = 0;  
+      tsunamiCooldown = 0; // we use lastTsunamiTriggeredScore to ensure next trigger only at new score multiple  
+    }  
+  }  
+}  
+  
+// ---- Draw loop ----  
+function draw(){  
+  // clear  
+  ctx.fillStyle = '#0b0b0f'; ctx.fillRect(0,0,canvas.width,canvas.height);  
+  const px = SCALE;  
+  
+  // draw shooter (red triangle down)  
+  drawTriangle(shooter.x, shooter.y, shooter.size, 'down', '#ff4d4d');  
+  
+  // draw player (gray triangle up)  
+  drawTriangle(player.x, player.y, player.size, 'up', '#9aa0a6');  
+  
+  // draw bullets (squares)  
+  for(const b of bullets){  
+    // tint side bullets darker to visually distinguish tsunami  
+    if(b.source === 'side'){  
+      ctx.fillStyle = '#ff8a8a';  
+    } else {  
+      ctx.fillStyle = '#ffd27a';  
+    }  
+    const sx = Math.round(b.x * px) - Math.round(b.size * SCALE/2);  
+    const sy = Math.round(b.y * px) - Math.round(b.size * SCALE/2);  
+    const sSize = Math.round(b.size * SCALE);  
+    ctx.fillRect(sx, sy, sSize, sSize);  
+  }  
+  
+  // draw score top-left  
+  ctx.fillStyle = '#dbe2ff';  
+  ctx.font = (8 * SCALE) + 'px monospace';  
+  ctx.textAlign = 'left';  
+  ctx.fillText('Score: ' + score, 6 * SCALE, 8 * SCALE);  
+  
+  // TSUNAMI indicator  
+  if(tsunamiActive){  
+    ctx.fillStyle = '#ff4d4d';  
+    ctx.font = (7 * SCALE) + 'px monospace';  
+    ctx.fillText('TSUNAMI!', Math.round(canvas.width/2 - 28 * SCALE), 8 * SCALE);  
+  }  
+}  
+  
+function drawTriangle(cx, cy, size, dir, color){  
+  const px = SCALE;  
+  ctx.fillStyle = color;  
+  const sx = Math.round(cx * px);  
+  const sy = Math.round(cy * px);  
+  const s = Math.round(size * px);  
+  ctx.beginPath();  
+  if(dir === 'down'){  
+    ctx.moveTo(sx, sy + s);  
+    ctx.lineTo(sx - s, sy - s);  
+    ctx.lineTo(sx + s, sy - s);  
+  } else {  
+    ctx.moveTo(sx, sy - s);  
+    ctx.lineTo(sx - s, sy + s);  
+    ctx.lineTo(sx + s, sy + s);  
+  }  
+  ctx.closePath(); ctx.fill();  
+}  
+  
+// main loop  
+let lastTimeLocal = null;  
+function loop(ts){  
+  if(!lastTimeLocal) lastTimeLocal = ts;  
+  const dt = Math.min(0.05, (ts - lastTimeLocal)/1000);  
+  lastTimeLocal = ts;  
+  update(dt);  
+  draw();  
+  requestAnimationFrame(loop);  
+}  
+requestAnimationFrame(loop);  
+  
+// ---- Input: free movement (touch + mouse) ----  
+let pointerActive = false;  
+function pointerDownHandler(x,y){  
+  if(!running) return;  
+  if(!player.movable) return;  
+  pointerActive = true;  
+  movePlayerTo(x,y);  
+}  
+function pointerMoveHandler(x,y){  
+  if(!pointerActive) return;  
+  if(!running) return;  
+  if(!player.movable) return;  
+  movePlayerTo(x,y);  
+}  
+function pointerUpHandler(){  
+  pointerActive = false;  
+}  
+function movePlayerTo(clientX, clientY){  
+  const rect = canvas.getBoundingClientRect();  
+  const px = (clientX - rect.left) / rect.width;  
+  const py = (clientY - rect.top) / rect.height;  
+  player.x = Math.round(px * canvas.vw);  
+  player.y = Math.round(py * canvas.vh);  
+  clampPlayer();  
+}  
+  
+canvas.addEventListener('touchstart', (e)=>{ e.preventDefault(); const t = e.touches[0]; pointerDownHandler(t.clientX, t.clientY); }, {passive:false});  
+canvas.addEventListener('touchmove', (e)=>{ e.preventDefault(); const t = e.touches[0]; pointerMoveHandler(t.clientX, t.clientY); }, {passive:false});  
+canvas.addEventListener('touchend', (e)=>{ e.preventDefault(); pointerUpHandler(); }, {passive:false});  
+  
+canvas.addEventListener('mousedown', (e)=>{ e.preventDefault(); pointerDownHandler(e.clientX, e.clientY); });  
+window.addEventListener('mousemove', (e)=>{ if(e.buttons) pointerMoveHandler(e.clientX, e.clientY); });  
+window.addEventListener('mouseup', ()=>{ pointerUpHandler(); });  
+  
+// ---- Buttons ----  
+startBtn.addEventListener('click', startSequence);  
+restartBtn.addEventListener('click', ()=>{ reset(); });  
+  
+// ---- Helpers ----  
+function updateFinalScore(){ finalScoreEl.textContent = 'Score: ' + score; }  
+  
+// ensure initial clamp (in case)  
+clampPlayer();  
+  
+</script>  </body>  
+</html>
